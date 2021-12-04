@@ -163,17 +163,28 @@ contract Tranche is ERC20Permit, ITranche {
     {
         // We check that this it is possible to deposit
         require(block.timestamp < unlockTimestamp, "expired");
+
+        // Load price per position tokens before
+        uint256 sharePriceBefore = position.pricePerPosition();
         // Since the wrapped position contract holds a balance we use the prefunded deposit method
         (
             uint256 shares,
             uint256 usedUnderlying,
             uint256 balanceBefore
         ) = position.prefundedDeposit(address(this));
-        // The implied current value of the holding of this contract in underlying
-        // is the balanceBefore*(usedUnderlying/shares) since (usedUnderlying/shares)
-        // is underlying per share and balanceBefore is the balance of this contract
-        // in position tokens before this deposit.
-        uint256 holdingsValue = (balanceBefore * usedUnderlying) / shares;
+        // The implied current base asset value of the holding of this contract in underlying
+        // is the balanceBefore * sharePerPosition * underlyingPershare since (usedUnderlying/shares)
+        // is underlying per share and balanceBefore is the balance of this contract in position
+        // tokens before this deposit.
+        uint256 holdingsBaseAsset = (balanceBefore *
+            sharePriceBefore *
+            usedUnderlying) /
+            (10**_underlyingDecimals) /
+            shares;
+        // TODO: add incentives calculation
+        uint256 holdingsIncentives = 0;
+        // Total value held by this contract should be base asset value plus incentive rewards
+        uint256 holdingsValue = holdingsBaseAsset + holdingsIncentives;
         // This formula is inputUnderlying - inputUnderlying*interestPerUnderlying
         // Accumulated interest has its value in the interest tokens so we have to mint less
         // principal tokens to account for that.
@@ -239,7 +250,7 @@ contract Tranche is ERC20Permit, ITranche {
         uint256 withdrawAmount = _amount;
         uint256 localSupply = uint256(valueSupplied);
         if (localSpeedbump != 0) {
-            // Load the assets we have in this vault
+            // Load the assets we have in this vault including incentive rewards
             uint256 holdings = position.balanceOfUnderlying(address(this));
             // If we check and the interest rate is no longer negative then we
             // allow normal 1 to 1 withdraws [even if the speedbump was hit less
@@ -267,7 +278,12 @@ contract Tranche is ERC20Permit, ITranche {
         valueSupplied = uint128(localSupply) - uint128(_amount);
         // Load the share balance of the vault before withdrawing [gas note - both the smart
         // contract and share value is warmed so this is actually quite a cheap lookup]
-        uint256 shareBalanceBefore = position.balanceOf(address(this));
+        uint256 positionBlanceBefore = position.balanceOf(address(this));
+        // Load price per position tokens before
+        uint256 sharePriceBefore = position.pricePerPosition();
+        // Convert position tokens to shares equally
+        uint256 shareBalanceBefore = (positionBlanceBefore * sharePriceBefore) /
+            (10**_underlyingDecimals);
         // Calculate the min output
         uint256 minOutput = withdrawAmount -
             (withdrawAmount * _SLIPPAGE_BP) /
@@ -331,7 +347,7 @@ contract Tranche is ERC20Permit, ITranche {
         require(block.timestamp >= unlockTimestamp, "E:Not Expired");
         // Burn tokens from the sender
         interestToken.burn(msg.sender, _amount);
-        // Load the underlying value of this contract
+        // Load the total value in underlying of this contract
         uint256 underlyingValueLocked = position.balanceOfUnderlying(
             address(this)
         );
